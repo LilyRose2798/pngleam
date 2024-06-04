@@ -12,6 +12,9 @@ pub const default_compression = gzlib.default_compression
 
 pub const compression_level = gzlib.compression_level
 
+pub type CompressionLevel =
+  gzlib.CompressionLevel
+
 pub type ColorType {
   Greyscale
   Color
