@@ -1,0 +1,16 @@
+name = "pngleam"
+version = "1.0.0"
+
+description = "PNG image library for Gleam"
+licences = ["AGPL-3.0-only"]
+repository = { type = "github", user = "LilyRose2798", repo = "pngleam" }
+links = [
+  { title = "7Circles Git", href = "https://git.7cs.dev/lily/pngleam" },
+]
+
+[dependencies]
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+gzlib = ">= 1.0.0 and < 2.0.0"
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
