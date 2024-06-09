@@ -1,5 +1,5 @@
 name = "pngleam"
-version = "1.0.2"
+version = "1.1.0"
 
 description = "PNG image library for Gleam"
 licences = ["AGPL-3.0-only"]
