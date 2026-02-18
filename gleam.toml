@@ -1,11 +1,11 @@
 name = "pngleam"
-version = "1.1.0"
+version = "1.1.1"
 
 description = "PNG image library for Gleam"
-licences = ["AGPL-3.0-only"]
+licences = ["MIT"]
 repository = { type = "github", user = "LilyRose2798", repo = "pngleam" }
 links = [
-  { title = "7Circles Git", href = "https://git.7cs.dev/lily/pngleam" },
+  { title = "Whitespace Git", href = "https://whitespace/lily/pngleam" },
 ]
 
 [dependencies]
