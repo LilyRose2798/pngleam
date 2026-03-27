@@ -941,7 +941,11 @@ pub fn parse_png(data: BitArray) -> Result(PngImage, PngParseError) {
 /// Returns the pixel at a specific x,y coordinate in the image (where 0,0 is the top left).
 /// 
 /// Returns an error if no pixel data was found at the given location.
-pub fn read_pixel_at(png: PngImage, x: Int, y: Int) -> Result(ColourData, Nil) {
+pub fn read_pixel_at(
+  png: PngImage,
+  x x: Int,
+  y y: Int,
+) -> Result(ColourData, Nil) {
   let PngImage(
     metadata: PngMetadata(width:, height:, colour_type:, bit_depth:),
     image_data:,
