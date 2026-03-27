@@ -1,5 +1,5 @@
 name = "pngleam"
-version = "1.1.1"
+version = "2.0.0"
 
 description = "PNG image library for Gleam"
 licences = ["MIT"]
@@ -10,7 +10,7 @@ links = [
 
 [dependencies]
 gleam_stdlib = ">= 0.34.0 and < 2.0.0"
-gzlib = ">= 1.0.1 and < 2.0.0"
+gzlib = ">= 2.0.0 and < 3.0.0"
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
