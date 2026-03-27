@@ -4,9 +4,6 @@ version = "2.0.0"
 description = "PNG image library for Gleam"
 licences = ["MIT"]
 repository = { type = "github", user = "LilyRose2798", repo = "pngleam" }
-links = [
-  { title = "Whitespace Git", href = "https://whitespace/lily/pngleam" },
-]
 
 [dependencies]
 gleam_stdlib = ">= 0.34.0 and < 2.0.0"
