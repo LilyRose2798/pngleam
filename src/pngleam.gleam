@@ -23,16 +23,22 @@ pub type PngMetadata {
 
 /// The type of colour used for a PNG image.
 pub type ColourType {
+  /// The image uses a fixed colour palette, and each pixel stores the index into that palette.
   Indexed
+  /// The image can only represent grey values.
   Greyscale(alpha: Bool)
+  /// The image can represent full colour values.
   Colour(alpha: Bool)
 }
 
 /// A representation of any possible colour value that
 /// can be contained within a PNG image.
 pub type ColourData {
+  /// The pixel data for an indexed image, representing the index in the colour palette of that image.
   IndexedData(i: Int)
+  /// The pixel data for a greyscale value, optionally with an alpha value if the image is of that colour type.
   GreyscaleData(v: Int, a: Option(Int))
+  /// The pixel data for a full colour RGB value, optionally with an alpha value if the image is of that colour type.
   ColourData(r: Int, g: Int, b: Int, a: Option(Int))
 }
 
@@ -53,26 +59,43 @@ pub type Rgba {
 
 /// The possible error states when creating a new PNG image.
 pub type PngRenderError {
+  /// The data provided was not byte-aligned.
   UnalignedData
+  /// The bit depth provided was not valid for the colour type being used.
   InvalidBitDepth
+  /// The compression level was not within the supported range (0-9)
   InvalidCompressionLevel
 }
 
 /// The possible error states when parsing a PNG image.
 pub type PngParseError {
+  /// The signature was not that of a PNG image but of a different file type.
   InvalidSignature
+  /// The checksum calculated for a chunk in the PNG did not match the one provided for that chunk.
   ChecksumMismatch
+  /// The image was missing a header (IHDR) chunk.
   MissingHeaderChunk
+  /// A chunk in the image was not in the correct format.
   InvalidChunkData
+  /// The colour type in the image was not one of the valid types (0, 2, 3, 4, and 6).
   InvalidColourType
+  /// The bit depth in the image was not valid for the colour type being used.
   InvalidParsedBitDepth
+  /// The compression type in the image was not one of the valid types (0).
   InvalidCompressionType
+  /// The filter method in the image was not one of the valid types (0).
   InvalidFilterMethod
+  /// The interlace method in the image was not one of the valid type (0 and 1).
   InvalidInterlaceMethod
+  /// The interlace method used by the image is not supported by the parser. Only 0 (no interlacing) is supported.
   UnsupportedInterlaceMethod
+  /// The palette data was invalid.
   InvalidPalette
+  /// The row filter type was not one of the valid values (0, 1, 2, 3, and 4).
   InvalidRowFilterType
+  /// The row data was invalid.
   InvalidRowData
+  /// The image data was not valid deflate data (i.e. missing zlib headers).
   InvalidDeflateData
 }
 
@@ -259,6 +282,13 @@ fn render_value(bit_depth: Int) {
 /// Create a PNG image with the indexed colour type by
 /// iterating over each pixel with some state.
 /// 
+/// An indexed image is one where a colour palette is specified
+/// for the image, and the pixel data just references the index
+/// within that palette that each pixel should be.
+/// 
+/// Each pixel value should be a number between 0 and one less
+/// than the length of the colour palette.
+/// 
 /// The callback gets the X and Y position of the pixel
 /// (where 0,0 is the top-left) along with the current state.
 /// 
@@ -294,6 +324,13 @@ pub fn render_indexed_png(
 
 /// Create a PNG image with the indexed colour type by
 /// iterating over each pixel.
+/// 
+/// An indexed image is one where a colour palette is specified
+/// for the image, and the pixel data just references the index
+/// within that palette that each pixel should be.
+/// 
+/// Each pixel value should be a number between 0 and one less
+/// than the length of the colour palette.
 /// 
 /// The callback gets the X and Y position of the pixel
 /// (where 0,0 is the top-left).
@@ -1014,6 +1051,10 @@ fn do_read_values(row: BitArray, bit_depth: Int, acc: List(Int)) -> List(Int) {
 /// Read a single row of pixels from a PNG image
 /// with an indexed colour type.
 /// 
+/// An indexed image is one where a colour palette is specified
+/// for the image, and the pixel data just references the index
+/// within that palette.
+/// 
 /// Returns an error if the provided bit depth is
 /// invalid for this colour type.
 pub fn read_indexed_pixel_row(
@@ -1032,6 +1073,10 @@ pub fn read_indexed_pixel_row(
 
 /// Fold over all the pixels in a parsed PNG image
 /// with an indexed colour type.
+/// 
+/// An indexed image is one where a colour palette is specified
+/// for the image, and the pixel data just references the index
+/// within that palette.
 /// 
 /// The callback gets the X and Y position of the pixel,
 /// (where 0,0 is the top-left) along with the indexed pixel value.
