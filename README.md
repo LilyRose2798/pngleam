@@ -6,6 +6,9 @@
 ```sh
 gleam add pngleam@2
 ```
+
+Parse and create PNG images in Gleam!
+
 ```gleam
 import pngleam
 import simplifile
