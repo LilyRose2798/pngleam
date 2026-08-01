@@ -9,6 +9,7 @@ pub type Error {
   InvalidSignature
   ChecksumMismatch
   MissingHeaderChunk
+  MissingIENDChunk
   InvalidChunkData
   InvalidColourType
   InvalidParsedBitDepth
@@ -120,14 +121,7 @@ pub fn do_image_data(
   make_rgb: fn(Int, Int, Int) -> rgb,
 ) -> Result(PngDataState(rgb), Error) {
   case data {
-    <<>> ->
-      Ok(
-        PngDataState(
-          ..state,
-          image_data: list.reverse(state.image_data),
-          other_data: list.reverse(state.other_data),
-        ),
-      )
+    <<>> -> Error(MissingIENDChunk)
     data ->
       case chunk(data) {
         Ok(RawChunkData(tag:, data:, rest:)) ->
@@ -148,7 +142,15 @@ pub fn do_image_data(
                 PngDataState(..state, image_data: [data, ..state.image_data]),
                 make_rgb,
               )
-            <<"IEND">> -> Ok(state)
+            <<"IEND">> if data == <<>> ->
+              Ok(
+                PngDataState(
+                  ..state,
+                  image_data: state.image_data |> list.reverse,
+                  other_data: state.other_data |> list.reverse,
+                ),
+              )
+            <<"IEND">> -> Error(InvalidChunkData)
             _ ->
               do_image_data(
                 rest,

@@ -77,6 +77,8 @@ pub type PngParseError {
   ChecksumMismatch
   /// The image was missing a header (IHDR) chunk.
   MissingHeaderChunk
+  /// The image was missing the IEND chunk.
+  MissingIENDChunk
   /// A chunk in the image was not in the correct format.
   InvalidChunkData
   /// The colour type in the image was not one of the valid types (0, 2, 3, 4, and 6).
