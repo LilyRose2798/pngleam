@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gzlib
+import pngleam/adam7
 import pngleam/parse
 import pngleam/read
 import pngleam/render
@@ -20,7 +21,13 @@ pub type PngImage {
 
 /// The information found in the initial header (IHDR) chunk of a PNG image.
 pub type PngMetadata {
-  PngMetadata(width: Int, height: Int, colour_type: ColourType, bit_depth: Int)
+  PngMetadata(
+    width: Int,
+    height: Int,
+    colour_type: ColourType,
+    bit_depth: Int,
+    interlace_method: Int,
+  )
 }
 
 /// The type of colour used for a PNG image.
@@ -91,8 +98,6 @@ pub type PngParseError {
   InvalidFilterMethod
   /// The interlace method in the image was not one of the valid type (0 and 1).
   InvalidInterlaceMethod
-  /// The interlace method used by the image is not supported by the parser. Only 0 (no interlacing) is supported.
-  UnsupportedInterlaceMethod
   /// The palette data was invalid.
   InvalidPalette
   /// The row filter type was not one of the valid values (0, 1, 2, 3, and 4).
@@ -115,7 +120,6 @@ fn map_parse_error(err: parse.Error) -> PngParseError {
     parse.InvalidCompressionType -> InvalidCompressionType
     parse.InvalidFilterMethod -> InvalidFilterMethod
     parse.InvalidInterlaceMethod -> InvalidInterlaceMethod
-    parse.UnsupportedInterlaceMethod -> UnsupportedInterlaceMethod
     parse.InvalidPalette -> InvalidPalette
     parse.InvalidRowFilterType -> InvalidRowFilterType
     parse.InvalidRowData -> InvalidRowData
@@ -634,9 +638,15 @@ pub fn parse_metadata(data: BitArray) -> Result(PngMetadata, PngParseError) {
     parse.chunk(data) |> result.map_error(map_parse_error),
   )
   use <- bool.guard(tag != <<"IHDR">>, return: Error(MissingHeaderChunk))
-  use parse.ParsedHeader(width:, height:, colour_type_code:, bit_depth:) <- result.try(
-    parse.header(data) |> result.map_error(map_parse_error),
-  )
+  use
+    parse.ParsedHeader(
+      width:,
+      height:,
+      colour_type_code:,
+      bit_depth:,
+      interlace_method:,
+    )
+  <- result.try(parse.header(data) |> result.map_error(map_parse_error))
   let colour_type = case colour_type_code {
     0 -> Greyscale(False)
     2 -> Colour(False)
@@ -645,7 +655,7 @@ pub fn parse_metadata(data: BitArray) -> Result(PngMetadata, PngParseError) {
     6 -> Colour(True)
     _ -> panic
   }
-  Ok(PngMetadata(width:, height:, colour_type:, bit_depth:))
+  Ok(PngMetadata(width:, height:, colour_type:, bit_depth:, interlace_method:))
 }
 
 /// Parse the PNG into a list of bit arrays representing each row of the image.
@@ -657,9 +667,15 @@ pub fn parse_png(data: BitArray) -> Result(PngImage, PngParseError) {
     parse.chunk(data) |> result.map_error(map_parse_error),
   )
   use <- bool.guard(tag != <<"IHDR">>, return: Error(MissingHeaderChunk))
-  use parse.ParsedHeader(width:, height:, colour_type_code:, bit_depth:) <- result.try(
-    parse.header(data) |> result.map_error(map_parse_error),
-  )
+  use
+    parse.ParsedHeader(
+      width:,
+      height:,
+      colour_type_code:,
+      bit_depth:,
+      interlace_method:,
+    )
+  <- result.try(parse.header(data) |> result.map_error(map_parse_error))
   let colour_type = case colour_type_code {
     0 -> Greyscale(False)
     2 -> Colour(False)
@@ -682,7 +698,7 @@ pub fn parse_png(data: BitArray) -> Result(PngImage, PngParseError) {
     |> gzlib.uncompress
     |> result.replace_error(InvalidDeflateData),
   )
-  let bpp =
+  let bpp_bits =
     case colour_type {
       Indexed -> 1
       Greyscale(False) -> 1
@@ -691,13 +707,27 @@ pub fn parse_png(data: BitArray) -> Result(PngImage, PngParseError) {
       Colour(True) -> 4
     }
     * bit_depth
-  let row_size = { width * bpp + 7 } / 8
-  let bpp = { bpp + 7 } / 8
+  let row_size = { width * bpp_bits + 7 } / 8
+  let bpp = { bpp_bits + 7 } / 8
   use image_data <- result.try(
-    parse.do_image_rows(image_data, row_size, bpp, [])
+    case interlace_method {
+      0 -> parse.do_image_rows(image_data, row_size, bpp, [])
+      1 ->
+        adam7.do_parse_image_adam7(
+          image_data,
+          width,
+          height,
+          bit_depth,
+          bpp_bits,
+          bpp,
+          row_size,
+        )
+      _ -> Error(parse.InvalidInterlaceMethod)
+    }
     |> result.map_error(map_parse_error),
   )
-  let metadata = PngMetadata(width:, height:, colour_type:, bit_depth:)
+  let metadata =
+    PngMetadata(width:, height:, colour_type:, bit_depth:, interlace_method:)
   Ok(PngImage(metadata:, palette:, image_data:, other_data:))
 }
 
@@ -710,7 +740,13 @@ pub fn read_pixel_at(
   y y: Int,
 ) -> Result(ColourData, Nil) {
   let PngImage(
-    metadata: PngMetadata(width:, height:, colour_type:, bit_depth:),
+    metadata: PngMetadata(
+      width:,
+      height:,
+      colour_type:,
+      bit_depth:,
+      interlace_method: _,
+    ),
     image_data:,
     ..,
   ) = png

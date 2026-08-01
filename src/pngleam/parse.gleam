@@ -16,7 +16,6 @@ pub type Error {
   InvalidCompressionType
   InvalidFilterMethod
   InvalidInterlaceMethod
-  UnsupportedInterlaceMethod
   InvalidPalette
   InvalidRowFilterType
   InvalidRowData
@@ -52,7 +51,13 @@ pub fn signature(data: BitArray) -> Result(BitArray, Error) {
 }
 
 pub type ParsedHeader {
-  ParsedHeader(width: Int, height: Int, colour_type_code: Int, bit_depth: Int)
+  ParsedHeader(
+    width: Int,
+    height: Int,
+    colour_type_code: Int,
+    bit_depth: Int,
+    interlace_method: Int,
+  )
 }
 
 pub fn header(header_data: BitArray) -> Result(ParsedHeader, Error) {
@@ -84,11 +89,14 @@ pub fn header(header_data: BitArray) -> Result(ParsedHeader, Error) {
         interlace_method != 0 && interlace_method != 1,
         return: Error(InvalidInterlaceMethod),
       )
-      use <- bool.guard(
-        interlace_method == 1,
-        Error(UnsupportedInterlaceMethod),
-      )
-      Ok(ParsedHeader(width:, height:, colour_type_code:, bit_depth:))
+
+      Ok(ParsedHeader(
+        width:,
+        height:,
+        colour_type_code:,
+        bit_depth:,
+        interlace_method:,
+      ))
     }
     _ -> Error(InvalidChunkData)
   }
