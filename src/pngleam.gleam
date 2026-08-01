@@ -1,10 +1,12 @@
 import gleam/bit_array
 import gleam/bool
-import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gzlib
+import pngleam/parse
+import pngleam/read
+import pngleam/render
 
 /// The parsed contents of a PNG image.
 pub type PngImage {
@@ -99,25 +101,33 @@ pub type PngParseError {
   InvalidDeflateData
 }
 
-fn do_chunk_bits(data: BitArray, chunks: List(BitArray)) -> List(BitArray) {
-  case data {
-    <<chunk:bytes-8192, rest:bits>> -> do_chunk_bits(rest, [chunk, ..chunks])
-    _ -> list.reverse([data, ..chunks])
+fn map_parse_error(err: parse.Error) -> PngParseError {
+  case err {
+    parse.InvalidSignature -> InvalidSignature
+    parse.ChecksumMismatch -> ChecksumMismatch
+    parse.MissingHeaderChunk -> MissingHeaderChunk
+    parse.MissingIENDChunk -> MissingIENDChunk
+    parse.InvalidChunkData -> InvalidChunkData
+    parse.InvalidColourType -> InvalidColourType
+    parse.InvalidParsedBitDepth -> InvalidParsedBitDepth
+    parse.InvalidCompressionType -> InvalidCompressionType
+    parse.InvalidFilterMethod -> InvalidFilterMethod
+    parse.InvalidInterlaceMethod -> InvalidInterlaceMethod
+    parse.UnsupportedInterlaceMethod -> UnsupportedInterlaceMethod
+    parse.InvalidPalette -> InvalidPalette
+    parse.InvalidRowFilterType -> InvalidRowFilterType
+    parse.InvalidRowData -> InvalidRowData
+    parse.InvalidDeflateData -> InvalidDeflateData
   }
 }
 
-fn render_chunk(
-  tag: BitArray,
-  data: BitArray,
-) -> Result(BitArray, PngRenderError) {
-  case gzlib.crc32(tag) |> result.try(gzlib.crc32_continue(_, data)) {
-    Ok(checksum) ->
-      Ok(<<bit_array.byte_size(data):32, tag:bits, data:bits, checksum:32>>)
-    Error(Nil) -> Error(UnalignedData)
+fn map_render_error(err: render.Error) -> PngRenderError {
+  case err {
+    render.UnalignedData -> UnalignedData
+    render.InvalidBitDepth -> InvalidBitDepth
+    render.InvalidCompressionLevel -> InvalidCompressionLevel
   }
 }
-
-const signature = <<137, 80, 78, 71, 13, 10, 26, 10>>
 
 /// Create a PNG image from a bit array containing raw uncompressed pixel data.
 /// 
@@ -157,7 +167,7 @@ pub fn render_png_raw_data(
     None -> Ok(gzlib.compress)
   })
   use ihdr <- result.try(
-    render_chunk(<<"IHDR">>, <<
+    render.chunk(<<"IHDR">>, <<
       width:32,
       height:32,
       bit_depth,
@@ -171,11 +181,20 @@ pub fn render_png_raw_data(
       0,
       0,
       0,
-    >>),
+    >>)
+    |> result.map_error(map_render_error),
   )
   use plte <- result.try(case palette {
     Some(palette) ->
-      render_chunk(<<"PLTE">>, list.fold(palette, <<>>, render_rgb(8)))
+      render.chunk(
+        <<"PLTE">>,
+        list.fold(
+          palette,
+          <<>>,
+          render.rgb(8, fn(rgb: Rgb) { #(rgb.r, rgb.g, rgb.b) }),
+        ),
+      )
+      |> result.map_error(map_render_error)
     None -> Ok(<<>>)
   })
   use compressed <- result.try(
@@ -183,25 +202,24 @@ pub fn render_png_raw_data(
     |> result.replace_error(UnalignedData),
   )
   use idats <- result.try(
-    do_chunk_bits(compressed, [])
-    |> list.try_map(render_chunk(<<"IDAT">>, _))
+    render.do_chunk_bits(compressed, [])
+    |> list.try_map(fn(chunk_data) {
+      render.chunk(<<"IDAT">>, chunk_data)
+      |> result.map_error(map_render_error)
+    })
     |> result.map(bit_array.concat),
   )
-  use iend <- result.try(render_chunk(<<"IEND">>, <<>>))
+  use iend <- result.try(
+    render.chunk(<<"IEND">>, <<>>)
+    |> result.map_error(map_render_error),
+  )
   Ok(<<
-    signature:bits,
+    render.signature:bits,
     ihdr:bits,
     plte:bits,
     idats:bits,
     iend:bits,
   >>)
-}
-
-fn do_flatten_rows(rows: List(BitArray), acc: BitArray) -> BitArray {
-  case rows {
-    [] -> acc
-    [row, ..rows] -> do_flatten_rows(rows, <<acc:bits, 0, row:bits>>)
-  }
 }
 
 /// Create a PNG image from a list of BitArrays each representing the
@@ -223,7 +241,7 @@ pub fn render_png_rows(
   palette palette: Option(List(Rgb)),
   compression_level compression_level: Option(Int),
 ) -> Result(BitArray, PngRenderError) {
-  let data = do_flatten_rows(rows, <<>>)
+  let data = render.do_flatten_rows(rows, <<>>)
   render_png_raw_data(
     data:,
     width:,
@@ -233,50 +251,6 @@ pub fn render_png_rows(
     palette:,
     compression_level:,
   )
-}
-
-fn render_rows(
-  width width: Int,
-  height height: Int,
-  state state: state,
-  plot plot: fn(state, Int, Int) -> #(state, a),
-  render render: fn(BitArray, a) -> BitArray,
-) -> #(state, List(BitArray)) {
-  let #(state, rows) =
-    int.range(0, height, #(state, []), fn(acc, y) {
-      let #(state, rows) = acc
-      let #(state, row) =
-        int.range(0, width, #(state, <<>>), fn(acc, x) {
-          let #(state, row) = acc
-          let #(state, value) = plot(state, x, y)
-          let row = render(row, value)
-          #(state, row)
-        })
-      #(state, [row, ..rows])
-    })
-  #(state, list.reverse(rows))
-}
-
-fn simple_render_rows(
-  width width: Int,
-  height height: Int,
-  plot plot: fn(Int, Int) -> a,
-  render render: fn(BitArray, a) -> BitArray,
-) -> List(BitArray) {
-  int.range(0, height, [], fn(rows, y) {
-    [int.range(0, width, <<>>, fn(row, x) { render(row, plot(x, y)) }), ..rows]
-  })
-  |> list.reverse
-}
-
-fn max_value(bit_depth: Int) -> Int {
-  int.bitwise_shift_left(1, bit_depth) - 1
-}
-
-fn render_value(bit_depth: Int) {
-  let min = 0
-  let max = max_value(bit_depth)
-  fn(row, value) { <<row:bits, int.clamp(value, min:, max:):size(bit_depth)>> }
 }
 
 /// Create a PNG image with the indexed colour type by
@@ -306,8 +280,9 @@ pub fn render_indexed_png(
   pixel plot: fn(state, Int, Int) -> #(state, Int),
   compression_level compression_level: Option(Int),
 ) -> Result(#(state, BitArray), PngRenderError) {
-  let render = render_value(bit_depth)
-  let #(state, rows) = render_rows(width:, height:, state:, plot:, render:)
+  let render_val = render.value(bit_depth)
+  let #(state, rows) =
+    render.rows(width:, height:, state:, plot:, render: render_val)
   let colour_type = Indexed
   let palette = Some(palette)
   use png <- result.map(render_png_rows(
@@ -348,8 +323,9 @@ pub fn simple_render_indexed_png(
   pixel plot: fn(Int, Int) -> Int,
   compression_level compression_level: Option(Int),
 ) -> Result(BitArray, PngRenderError) {
-  let render = render_value(bit_depth)
-  let rows = simple_render_rows(width:, height:, plot:, render:)
+  let render_val = render.value(bit_depth)
+  let rows =
+    render.simple_render_rows(width:, height:, plot:, render: render_val)
   let colour_type = Indexed
   let palette = Some(palette)
   render_png_rows(
@@ -382,8 +358,9 @@ pub fn render_greyscale_png(
   pixel plot: fn(state, Int, Int) -> #(state, Int),
   compression_level compression_level: Option(Int),
 ) -> Result(#(state, BitArray), PngRenderError) {
-  let render = render_value(bit_depth)
-  let #(state, rows) = render_rows(width:, height:, state:, plot:, render:)
+  let render_val = render.value(bit_depth)
+  let #(state, rows) =
+    render.rows(width:, height:, state:, plot:, render: render_val)
   let colour_type = Greyscale(False)
   let palette = None
   use png <- result.map(render_png_rows(
@@ -416,8 +393,9 @@ pub fn simple_render_greyscale_png(
   pixel plot: fn(Int, Int) -> Int,
   compression_level compression_level: Option(Int),
 ) -> Result(BitArray, PngRenderError) {
-  let render = render_value(bit_depth)
-  let rows = simple_render_rows(width:, height:, plot:, render:)
+  let render_val = render.value(bit_depth)
+  let rows =
+    render.simple_render_rows(width:, height:, plot:, render: render_val)
   let colour_type = Greyscale(False)
   let palette = None
   render_png_rows(
@@ -429,18 +407,6 @@ pub fn simple_render_greyscale_png(
     palette:,
     compression_level:,
   )
-}
-
-fn render_va(bit_depth: Int) {
-  let min = 0
-  let max = max_value(bit_depth)
-  fn(row: BitArray, va: Va) {
-    <<
-      row:bits,
-      int.clamp(va.v, min:, max:):size(bit_depth),
-      int.clamp(va.a, min:, max:):size(bit_depth),
-    >>
-  }
 }
 
 /// Create a PNG image with the greyscale+alpha colour type by
@@ -462,8 +428,9 @@ pub fn render_transparent_greyscale_png(
   pixel plot: fn(state, Int, Int) -> #(state, Va),
   compression_level compression_level: Option(Int),
 ) -> Result(#(state, BitArray), PngRenderError) {
-  let render = render_va(bit_depth)
-  let #(state, rows) = render_rows(width:, height:, state:, plot:, render:)
+  let render_va = render.va(bit_depth, fn(va: Va) { #(va.v, va.a) })
+  let #(state, rows) =
+    render.rows(width:, height:, state:, plot:, render: render_va)
   let colour_type = Greyscale(True)
   let palette = None
   use png <- result.map(render_png_rows(
@@ -496,8 +463,9 @@ pub fn simple_render_transparent_greyscale_png(
   pixel plot: fn(Int, Int) -> Va,
   compression_level compression_level: Option(Int),
 ) -> Result(BitArray, PngRenderError) {
-  let render = render_va(bit_depth)
-  let rows = simple_render_rows(width:, height:, plot:, render:)
+  let render_va = render.va(bit_depth, fn(va: Va) { #(va.v, va.a) })
+  let rows =
+    render.simple_render_rows(width:, height:, plot:, render: render_va)
   let colour_type = Greyscale(True)
   let palette = None
   render_png_rows(
@@ -509,19 +477,6 @@ pub fn simple_render_transparent_greyscale_png(
     palette:,
     compression_level:,
   )
-}
-
-fn render_rgb(bit_depth: Int) {
-  let min = 0
-  let max = max_value(bit_depth)
-  fn(row: BitArray, rgb: Rgb) {
-    <<
-      row:bits,
-      int.clamp(rgb.r, min:, max:):size(bit_depth),
-      int.clamp(rgb.g, min:, max:):size(bit_depth),
-      int.clamp(rgb.b, min:, max:):size(bit_depth),
-    >>
-  }
 }
 
 /// Create a PNG image with the RGB colour type by
@@ -543,8 +498,10 @@ pub fn render_colour_png(
   pixel plot: fn(state, Int, Int) -> #(state, Rgb),
   compression_level compression_level: Option(Int),
 ) -> Result(#(state, BitArray), PngRenderError) {
-  let render = render_rgb(bit_depth)
-  let #(state, rows) = render_rows(width:, height:, state:, plot:, render:)
+  let render_rgb =
+    render.rgb(bit_depth, fn(rgb: Rgb) { #(rgb.r, rgb.g, rgb.b) })
+  let #(state, rows) =
+    render.rows(width:, height:, state:, plot:, render: render_rgb)
   let colour_type = Colour(False)
   let palette = None
   use png <- result.map(render_png_rows(
@@ -577,8 +534,10 @@ pub fn simple_render_colour_png(
   pixel plot: fn(Int, Int) -> Rgb,
   compression_level compression_level: Option(Int),
 ) -> Result(BitArray, PngRenderError) {
-  let render = render_rgb(bit_depth)
-  let rows = simple_render_rows(width:, height:, plot:, render:)
+  let render_rgb =
+    render.rgb(bit_depth, fn(rgb: Rgb) { #(rgb.r, rgb.g, rgb.b) })
+  let rows =
+    render.simple_render_rows(width:, height:, plot:, render: render_rgb)
   let colour_type = Colour(False)
   let palette = None
   render_png_rows(
@@ -590,20 +549,6 @@ pub fn simple_render_colour_png(
     palette:,
     compression_level:,
   )
-}
-
-fn render_rgba(bit_depth: Int) {
-  let min = 0
-  let max = max_value(bit_depth)
-  fn(row: BitArray, rgba: Rgba) {
-    <<
-      row:bits,
-      int.clamp(rgba.r, min:, max:):size(bit_depth),
-      int.clamp(rgba.g, min:, max:):size(bit_depth),
-      int.clamp(rgba.b, min:, max:):size(bit_depth),
-      int.clamp(rgba.a, min:, max:):size(bit_depth),
-    >>
-  }
 }
 
 /// Create a PNG image with the RGBA colour type by
@@ -625,8 +570,10 @@ pub fn render_transparent_colour_png(
   pixel plot: fn(state, Int, Int) -> #(state, Rgba),
   compression_level compression_level: Option(Int),
 ) -> Result(#(state, BitArray), PngRenderError) {
-  let render = render_rgba(bit_depth)
-  let #(state, rows) = render_rows(width:, height:, state:, plot:, render:)
+  let render_rgba =
+    render.rgba(bit_depth, fn(rgba: Rgba) { #(rgba.r, rgba.g, rgba.b, rgba.a) })
+  let #(state, rows) =
+    render.rows(width:, height:, state:, plot:, render: render_rgba)
   let colour_type = Colour(True)
   let palette = None
   use png <- result.map(render_png_rows(
@@ -659,8 +606,10 @@ pub fn simple_render_transparent_colour_png(
   pixel plot: fn(Int, Int) -> Rgba,
   compression_level compression_level: Option(Int),
 ) -> Result(BitArray, PngRenderError) {
-  let render = render_rgba(bit_depth)
-  let rows = simple_render_rows(width:, height:, plot:, render:)
+  let render_rgba =
+    render.rgba(bit_depth, fn(rgba: Rgba) { #(rgba.r, rgba.g, rgba.b, rgba.a) })
+  let rows =
+    render.simple_render_rows(width:, height:, plot:, render: render_rgba)
   let colour_type = Colour(True)
   let palette = None
   render_png_rows(
@@ -674,283 +623,56 @@ pub fn simple_render_transparent_colour_png(
   )
 }
 
-type RawChunkData {
-  RawChunkData(tag: BitArray, data: BitArray, rest: BitArray)
-}
-
-fn parse_chunk(data: BitArray) -> Result(RawChunkData, PngParseError) {
-  case data {
-    <<
-      data_size:32,
-      tag:bytes-4,
-      data:bytes-size(data_size),
-      checksum:32,
-      rest:bytes,
-    >> ->
-      case gzlib.crc32(tag) |> result.try(gzlib.crc32_continue(_, data)) {
-        Ok(crc) if crc == checksum -> Ok(RawChunkData(tag:, data:, rest:))
-        _ -> Error(ChecksumMismatch)
-      }
-    _ -> Error(InvalidChunkData)
-  }
-}
-
-fn parse_signature(data: BitArray) -> Result(BitArray, PngParseError) {
-  case data {
-    <<137, 80, 78, 71, 13, 10, 26, 10, rest:bytes>> -> Ok(rest)
-    _ -> Error(InvalidSignature)
-  }
-}
-
-fn parse_header(header_data: BitArray) -> Result(PngMetadata, PngParseError) {
-  case header_data {
-    <<
-      width:32,
-      height:32,
-      bit_depth,
-      colour_type,
-      compression_method,
-      filter_method,
-      interlace_method,
-    >> -> {
-      use colour_type <- result.try(case colour_type {
-        0 -> Ok(Greyscale(False))
-        2 -> Ok(Colour(False))
-        3 -> Ok(Indexed)
-        4 -> Ok(Greyscale(True))
-        6 -> Ok(Colour(True))
-        _ -> Error(InvalidColourType)
-      })
-      use _ <- result.try(case colour_type, bit_depth {
-        _, 8
-        | Indexed, 1
-        | Indexed, 2
-        | Indexed, 4
-        | Greyscale(False), 1
-        | Greyscale(False), 2
-        | Greyscale(False), 4
-        | Greyscale(_), 16
-        | Colour(_), 16
-        -> Ok(Nil)
-        _, _ -> Error(InvalidParsedBitDepth)
-      })
-      use <- bool.guard(
-        compression_method != 0,
-        return: Error(InvalidCompressionType),
-      )
-      use <- bool.guard(filter_method != 0, return: Error(InvalidFilterMethod))
-      use <- bool.guard(
-        interlace_method != 0 && interlace_method != 1,
-        return: Error(InvalidInterlaceMethod),
-      )
-      use <- bool.guard(
-        interlace_method == 1,
-        Error(UnsupportedInterlaceMethod),
-      )
-      Ok(PngMetadata(width:, height:, colour_type:, bit_depth:))
-    }
-    _ -> Error(InvalidChunkData)
-  }
-}
-
 /// Parse only the metadata chunk at the start of the PNG.
 pub fn parse_metadata(data: BitArray) -> Result(PngMetadata, PngParseError) {
-  use data <- result.try(parse_signature(data))
-  use RawChunkData(tag:, data:, rest: _) <- result.try(parse_chunk(data))
-  use <- bool.guard(tag != <<"IHDR">>, Error(MissingHeaderChunk))
-  parse_header(data)
-}
-
-type PngDataState {
-  PngDataState(
-    palette: Option(List(Rgb)),
-    image_data: List(BitArray),
-    other_data: List(#(BitArray, BitArray)),
+  use data <- result.try(
+    parse.signature(data) |> result.map_error(map_parse_error),
   )
-}
-
-fn do_parse_palette(
-  data: BitArray,
-  palette: List(Rgb),
-) -> Result(List(Rgb), Nil) {
-  case data {
-    <<>> -> Ok(list.reverse(palette))
-    <<r, g, b, data:bits>> ->
-      do_parse_palette(data, [Rgb(r:, g:, b:), ..palette])
-    _ -> Error(Nil)
+  use parse.RawChunkData(tag:, data:, rest: _) <- result.try(
+    parse.chunk(data) |> result.map_error(map_parse_error),
+  )
+  use <- bool.guard(tag != <<"IHDR">>, return: Error(MissingHeaderChunk))
+  use parse.ParsedHeader(width:, height:, colour_type_code:, bit_depth:) <- result.try(
+    parse.header(data) |> result.map_error(map_parse_error),
+  )
+  let colour_type = case colour_type_code {
+    0 -> Greyscale(False)
+    2 -> Colour(False)
+    3 -> Indexed
+    4 -> Greyscale(True)
+    6 -> Colour(True)
+    _ -> panic
   }
-}
-
-fn do_parse_image_data(
-  data: BitArray,
-  state: PngDataState,
-) -> Result(PngDataState, PngParseError) {
-  case data {
-    <<>> ->
-      Ok(
-        PngDataState(
-          ..state,
-          image_data: list.reverse(state.image_data),
-          other_data: list.reverse(state.other_data),
-        ),
-      )
-    data ->
-      case parse_chunk(data) {
-        Ok(RawChunkData(tag:, data:, rest:)) ->
-          case tag {
-            <<"PLTE">> ->
-              case do_parse_palette(data, []) {
-                Ok(palette) ->
-                  do_parse_image_data(
-                    rest,
-                    PngDataState(..state, palette: Some(palette)),
-                  )
-                Error(Nil) -> Error(InvalidPalette)
-              }
-            <<"IDAT">> ->
-              do_parse_image_data(
-                rest,
-                PngDataState(..state, image_data: [data, ..state.image_data]),
-              )
-            <<"IEND">> -> Ok(state)
-            _ ->
-              do_parse_image_data(
-                rest,
-                PngDataState(..state, other_data: [
-                  #(tag, data),
-                  ..state.other_data
-                ]),
-              )
-          }
-        Error(e) -> Error(e)
-      }
-  }
-}
-
-fn do_add_bytewise(xs: BitArray, ys: BitArray, acc: BitArray) -> BitArray {
-  case xs, ys {
-    <<x, xs:bits>>, <<y, ys:bits>> ->
-      do_add_bytewise(xs, ys, <<acc:bits, { x + y }>>)
-    _, _ -> acc
-  }
-}
-
-// Only used when filtering, not unfiltering
-// fn do_subtract_bytewise(xs: BitArray, ys: BitArray, acc: BitArray) -> BitArray {
-//   case xs, ys {
-//     <<x, xs:bits>>, <<y, ys:bits>> ->
-//       do_subtract_bytewise(xs, ys, <<acc:bits, { x - y }>>)
-//     _, _ -> acc
-//   }
-// }
-
-fn do_average_bytewise(xs: BitArray, ys: BitArray, acc: BitArray) -> BitArray {
-  case xs, ys {
-    <<x, xs:bits>>, <<y, ys:bits>> ->
-      do_average_bytewise(xs, ys, <<acc:bits, { { x + y } / 2 }>>)
-    _, _ -> acc
-  }
-}
-
-fn do_paeth_bytewise(
-  xs: BitArray,
-  ys: BitArray,
-  zs: BitArray,
-  acc: BitArray,
-) -> BitArray {
-  case xs, ys, zs {
-    <<x, xs:bits>>, <<y, ys:bits>>, <<z, zs:bits>> -> {
-      let p = x + y - z
-      let px = int.absolute_value(p - x)
-      let py = int.absolute_value(p - y)
-      let pz = int.absolute_value(p - z)
-      let n = case Nil {
-        _ if px <= py && px <= pz -> px
-        _ if py <= pz -> py
-        _ -> pz
-      }
-      do_paeth_bytewise(xs, ys, zs, <<acc:bits, n>>)
-    }
-    _, _, _ -> acc
-  }
-}
-
-fn offset_row(row: BitArray, bpp: Int) -> BitArray {
-  <<0:unit(8)-size(bpp), row:bits>>
-}
-
-fn previous_row(rows: List(BitArray), row_size: Int) -> BitArray {
-  case rows {
-    [] -> <<0:unit(8)-size(row_size)>>
-    [prev, ..] -> prev
-  }
-}
-
-fn do_parse_image_rows(
-  data: BitArray,
-  row_size: Int,
-  bpp: Int,
-  rows: List(BitArray),
-) -> Result(List(BitArray), PngParseError) {
-  case data {
-    <<>> -> Ok(list.reverse(rows))
-    <<filter_type, row:bytes-size(row_size), data:bits>> ->
-      case filter_type {
-        0 -> do_parse_image_rows(data, row_size, bpp, [row, ..rows])
-        1 ->
-          do_parse_image_rows(data, row_size, bpp, [
-            do_add_bytewise(row, offset_row(row, bpp), <<>>),
-            ..rows
-          ])
-        2 ->
-          do_parse_image_rows(data, row_size, bpp, [
-            do_add_bytewise(row, previous_row(rows, row_size), <<>>),
-            ..rows
-          ])
-        3 ->
-          do_parse_image_rows(data, row_size, bpp, [
-            do_add_bytewise(
-              row,
-              do_average_bytewise(
-                offset_row(row, bpp),
-                previous_row(rows, row_size),
-                <<>>,
-              ),
-              <<>>,
-            ),
-            ..rows
-          ])
-        4 ->
-          do_parse_image_rows(data, row_size, bpp, [
-            do_add_bytewise(
-              row,
-              do_paeth_bytewise(
-                offset_row(row, bpp),
-                previous_row(rows, row_size),
-                offset_row(previous_row(rows, row_size), bpp),
-                <<>>,
-              ),
-              <<>>,
-            ),
-            ..rows
-          ])
-        _ -> Error(InvalidRowFilterType)
-      }
-    _ -> Error(InvalidRowData)
-  }
+  Ok(PngMetadata(width:, height:, colour_type:, bit_depth:))
 }
 
 /// Parse the PNG into a list of bit arrays representing each row of the image.
 pub fn parse_png(data: BitArray) -> Result(PngImage, PngParseError) {
-  use data <- result.try(parse_signature(data))
-  use RawChunkData(tag:, data:, rest:) <- result.try(parse_chunk(data))
+  use data <- result.try(
+    parse.signature(data) |> result.map_error(map_parse_error),
+  )
+  use parse.RawChunkData(tag:, data:, rest:) <- result.try(
+    parse.chunk(data) |> result.map_error(map_parse_error),
+  )
   use <- bool.guard(tag != <<"IHDR">>, return: Error(MissingHeaderChunk))
-  use metadata <- result.try(parse_header(data))
-  use PngDataState(palette:, image_data:, other_data:) <- result.try(
-    do_parse_image_data(
+  use parse.ParsedHeader(width:, height:, colour_type_code:, bit_depth:) <- result.try(
+    parse.header(data) |> result.map_error(map_parse_error),
+  )
+  let colour_type = case colour_type_code {
+    0 -> Greyscale(False)
+    2 -> Colour(False)
+    3 -> Indexed
+    4 -> Greyscale(True)
+    6 -> Colour(True)
+    _ -> panic
+  }
+  use parse.PngDataState(palette:, image_data:, other_data:) <- result.try(
+    parse.do_image_data(
       rest,
-      PngDataState(palette: None, image_data: [], other_data: []),
-    ),
+      parse.PngDataState(palette: None, image_data: [], other_data: []),
+      fn(r, g, b) { Rgb(r:, g:, b:) },
+    )
+    |> result.map_error(map_parse_error),
   )
   use image_data <- result.try(
     image_data
@@ -959,19 +681,21 @@ pub fn parse_png(data: BitArray) -> Result(PngImage, PngParseError) {
     |> result.replace_error(InvalidDeflateData),
   )
   let bpp =
-    case metadata.colour_type {
+    case colour_type {
       Indexed -> 1
       Greyscale(False) -> 1
       Greyscale(True) -> 2
       Colour(False) -> 3
       Colour(True) -> 4
     }
-    * metadata.bit_depth
-  let row_size = { metadata.width * bpp + 7 } / 8
+    * bit_depth
+  let row_size = { width * bpp + 7 } / 8
   let bpp = { bpp + 7 } / 8
   use image_data <- result.try(
-    do_parse_image_rows(image_data, row_size, bpp, []),
+    parse.do_image_rows(image_data, row_size, bpp, [])
+    |> result.map_error(map_parse_error),
   )
+  let metadata = PngMetadata(width:, height:, colour_type:, bit_depth:)
   Ok(PngImage(metadata:, palette:, image_data:, other_data:))
 }
 
@@ -1040,14 +764,6 @@ pub fn read_pixel_at(
   }
 }
 
-fn do_read_values(row: BitArray, bit_depth: Int, acc: List(Int)) -> List(Int) {
-  case row {
-    <<v:size(bit_depth), row:bits>> ->
-      do_read_values(row, bit_depth, [v, ..acc])
-    _ -> list.reverse(acc)
-  }
-}
-
 /// Read a single row of pixels from a PNG image
 /// with an indexed colour type.
 /// 
@@ -1068,7 +784,7 @@ pub fn read_indexed_pixel_row(
     },
     return: Error(Nil),
   )
-  do_read_values(row, bit_depth, []) |> Ok
+  read.do_read_values(row, bit_depth, []) |> Ok
 }
 
 /// Fold over all the pixels in a parsed PNG image
@@ -1101,7 +817,7 @@ pub fn fold_indexed_pixels(
   )
   list.index_fold(png.image_data, state, fn(state, row, y) {
     list.index_fold(
-      do_read_values(row, png.metadata.bit_depth, []),
+      read.do_read_values(row, png.metadata.bit_depth, []),
       state,
       fn(state, v, x) { fun(state, x, y, v) },
     )
@@ -1125,7 +841,7 @@ pub fn read_greyscale_pixel_row(
     },
     return: Error(Nil),
   )
-  do_read_values(row, bit_depth, []) |> Ok
+  read.do_read_values(row, bit_depth, []) |> Ok
 }
 
 /// Fold over all the pixels in a parsed PNG image
@@ -1157,20 +873,12 @@ pub fn fold_greyscale_pixels(
   )
   list.index_fold(png.image_data, state, fn(state, row, y) {
     list.index_fold(
-      do_read_values(row, png.metadata.bit_depth, []),
+      read.do_read_values(row, png.metadata.bit_depth, []),
       state,
       fn(state, v, x) { fun(state, x, y, v) },
     )
   })
   |> Ok
-}
-
-fn do_read_va(row: BitArray, bit_depth: Int, acc: List(Va)) -> List(Va) {
-  case row {
-    <<v:size(bit_depth), a:size(bit_depth), row:bits>> ->
-      do_read_va(row, bit_depth, [Va(v:, a:), ..acc])
-    _ -> list.reverse(acc)
-  }
 }
 
 /// Read a single row of pixels from a PNG image
@@ -1189,7 +897,7 @@ pub fn read_transparent_greyscale_pixel_row(
     },
     return: Error(Nil),
   )
-  do_read_va(row, bit_depth, []) |> Ok
+  read.do_read_va(row, bit_depth, [], fn(v, a) { Va(v:, a:) }) |> Ok
 }
 
 /// Fold over all the pixels in a parsed PNG image
@@ -1221,20 +929,12 @@ pub fn fold_transparent_greyscale_pixels(
   )
   list.index_fold(png.image_data, state, fn(state, row, y) {
     list.index_fold(
-      do_read_va(row, png.metadata.bit_depth, []),
+      read.do_read_va(row, png.metadata.bit_depth, [], fn(v, a) { Va(v:, a:) }),
       state,
       fn(state, va, x) { fun(state, x, y, va) },
     )
   })
   |> Ok
-}
-
-fn do_read_rgb(row: BitArray, bit_depth: Int, acc: List(Rgb)) -> List(Rgb) {
-  case row {
-    <<r:size(bit_depth), g:size(bit_depth), b:size(bit_depth), row:bits>> ->
-      do_read_rgb(row, bit_depth, [Rgb(r:, g:, b:), ..acc])
-    _ -> list.reverse(acc)
-  }
 }
 
 /// Read a single row of pixels from a PNG image
@@ -1253,7 +953,7 @@ pub fn read_colour_pixel_row(
     },
     return: Error(Nil),
   )
-  do_read_rgb(row, bit_depth, []) |> Ok
+  read.do_read_rgb(row, bit_depth, [], fn(r, g, b) { Rgb(r:, g:, b:) }) |> Ok
 }
 
 /// Fold over all the pixels in a parsed PNG image
@@ -1285,25 +985,14 @@ pub fn fold_colour_pixels(
   )
   list.index_fold(png.image_data, state, fn(state, row, y) {
     list.index_fold(
-      do_read_rgb(row, png.metadata.bit_depth, []),
+      read.do_read_rgb(row, png.metadata.bit_depth, [], fn(r, g, b) {
+        Rgb(r:, g:, b:)
+      }),
       state,
       fn(state, rgb, x) { fun(state, x, y, rgb) },
     )
   })
   |> Ok
-}
-
-fn do_read_rgba(row: BitArray, bit_depth: Int, acc: List(Rgba)) -> List(Rgba) {
-  case row {
-    <<
-      r:size(bit_depth),
-      g:size(bit_depth),
-      b:size(bit_depth),
-      a:size(bit_depth),
-      row:bits,
-    >> -> do_read_rgba(row, bit_depth, [Rgba(r:, g:, b:, a:), ..acc])
-    _ -> list.reverse(acc)
-  }
 }
 
 /// Read a single row of pixels from a PNG image
@@ -1322,7 +1011,8 @@ pub fn read_transparent_colour_pixel_row(
     },
     return: Error(Nil),
   )
-  do_read_rgba(row, bit_depth, []) |> Ok
+  read.do_read_rgba(row, bit_depth, [], fn(r, g, b, a) { Rgba(r:, g:, b:, a:) })
+  |> Ok
 }
 
 /// Fold over all the pixels in a parsed PNG image
@@ -1354,7 +1044,9 @@ pub fn fold_transparent_colour_pixels(
   )
   list.index_fold(png.image_data, state, fn(state, row, y) {
     list.index_fold(
-      do_read_rgba(row, png.metadata.bit_depth, []),
+      read.do_read_rgba(row, png.metadata.bit_depth, [], fn(r, g, b, a) {
+        Rgba(r:, g:, b:, a:)
+      }),
       state,
       fn(state, rgba, x) { fun(state, x, y, rgba) },
     )
