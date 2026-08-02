@@ -2,5 +2,4 @@
 *.ez
 /build
 erl_crash.dump
-*.png
 *.txt
